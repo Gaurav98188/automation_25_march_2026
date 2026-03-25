@@ -1,0 +1,5 @@
+beautifulsoup4>=4.12
+lxml>=4.9
+pdf2image>=1.17
+pdfplumber>=0.11
+Pillow>=10.0
