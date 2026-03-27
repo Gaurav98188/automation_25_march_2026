@@ -1,178 +1,171 @@
-"""
-pipeline.py
------------
-Orchestrates the full PDF-to-clean-Markdown transformation pipeline.
-
-Pipeline steps
---------------
-  Step 1   figure_extractor    Crop figure images from PDF → img_dir/*.png
-  Step 2   cover_replacer      Parse cover-page table     → clean key/value Markdown
-  Step 3   cover_replacer      Parse revision table       → clean minimal HTML table
-  Step 4   toc_builder         Rebuild TOC                → styled anchor-linked table
-  Step 5   boilerplate_remover Strip per-page noise lines
-  Step 6   symbol_normaliser   Fix OCR symbol artefacts   (☒/🔘 → 〇)
-  Step 7   heading_fixer       Correct heading depths     (# levels by content pattern)
-  Step 8   image_rewriter      Rewrite figure references  (figures/N.M → img_dir/fig_N_M.png)
-  Step 9   table_cleaner       Fix page-break artefacts inside <table> blocks
-  Step 10  whitespace_cleaner  Final cosmetic normalisation
-
-CLI usage
----------
-    python pipeline.py --pdf source.pdf --md input.md --out output.md
-    python pipeline.py --pdf source.pdf --md input.md --out output.md --img-dir assets/figures
-
-Python API
-----------
-    from pipeline import run
-    run(pdf_path="source.pdf", md_path="input.md", out_path="output.md")
-    run(pdf_path="source.pdf", md_path="input.md", out_path="output.md", img_dir="assets")
-"""
-
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+from typing import Callable, List
+import re
 
-from boilerplate_remover import remove_boilerplate
-from config import DEFAULT_IMG_DIR
-from cover_replacer import replace_cover, replace_revision_table
-from figure_extractor import extract_figures
-from heading_fixer import fix_headings
-from image_rewriter import rewrite_images
-from symbol_normaliser import normalise_symbols
-from table_cleaner import clean_tables
-from toc_builder import replace_toc
-from whitespace_cleaner import clean_whitespace
+from config import DEFAULT_IMG_DIR, DEBUG_DIR
+
+from steps import (
+    step_replace_cover,
+    step_replace_revision,
+    step_replace_toc,
+    step_remove_boilerplate,
+    step_remove_footer_tables,
+    step_remove_memo,
+    step_remove_empty_rows,
+    step_normalise_symbols,
+    step_fix_headings,
+    step_rewrite_images,
+    step_clean_tables,
+    step_clean_whitespace,
+    step_add_heading_ids
+)
+
+# ── Logging ─────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+Step = Callable[[str, dict], str]
 
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
+# ── TOC extractor (FINAL STABLE) ─────────────────────────
+def extract_toc_entries(md_path):
+    text = Path(md_path).read_text(encoding="utf-8")
 
-def run(
-    pdf_path: str | Path,
-    md_path:  str | Path,
-    out_path: str | Path,
-    img_dir:  str | Path | None = None,
-) -> None:
-    """
-    Execute the full transformation pipeline.
+    # STEP 1: Extract Page 3
+    page3_match = re.search(
+        r'(.*?<!-- PageNumber:\s*3\s*-->)',
+        text,
+        flags=re.DOTALL
+    )
 
-    Parameters
-    ----------
-    pdf_path : str | Path
-        Source PDF file.  Used only for figure extraction (step 1).
-    md_path : str | Path
-        Raw input Markdown file produced by a PDF-to-Markdown tool.
-    out_path : str | Path
-        Destination for the cleaned Markdown output.
-    img_dir : str | Path | None
-        Directory where cropped figure PNGs are saved.
-        Defaults to a ``figures/`` sub-directory next to *out_path*.
-    """
+    if not page3_match:
+        return []
+
+    page3 = page3_match.group(1)
+
+    # 🔥 FIX: normalize <br> → newline
+    page3 = re.sub(r'<br\s*/?>', '\n', page3)
+
+    # STEP 2: find ALL tables
+    tables = re.findall(r'<table.*?>.*?</table>', page3, flags=re.DOTALL)
+
+    if not tables:
+        return []
+
+    # STEP 3: pick biggest table
+    table = max(tables, key=len)
+
+    # 🔥 FIX: normalize again inside table
+    table = re.sub(r'<br\s*/?>', '\n', table)
+
+    rows = re.findall(r'<tr>(.*?)</tr>', table, flags=re.DOTALL)
+
+    entries = []
+
+    for row in rows:
+
+        # ❌ skip header row completely
+        if "<th" in row.lower():
+            continue
+
+        cols = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, flags=re.DOTALL)
+        cols = [re.sub(r'<.*?>', '', c).strip() for c in cols]
+
+        # must have at least title + page
+        if len(cols) < 3:
+            continue
+
+        title_col = cols[1]
+        page_col = cols[2]
+
+        # skip empty rows
+        if not title_col.strip() or not page_col.strip():
+            continue
+
+        # handle <br>
+        titles = title_col.split('\n')
+        pages = page_col.split('\n')
+
+        for t, p in zip(titles, pages):
+
+            t = t.strip()
+            p = p.strip()
+
+            if not t or not p:
+                continue
+
+            clean_title = re.sub(r'\s+', ' ', t)
+
+            # ✅ FIX LEVEL (correct hierarchy)
+            level = (clean_title.count('.') - 1) * 20
+            if level < 0:
+                level = 0
+
+            # ✅ CLEAN ANCHOR
+            anchor = re.sub(r'[^\w一-龥ぁ-んァ-ン]+', '-', clean_title).strip('-')
+
+            entries.append((level, anchor, clean_title, p))
+
+
+# ── Pipeline steps ───────────────────────────────────────
+PIPELINE: List[tuple[str, Step]] = [
+    ("Replacing cover page", step_replace_cover),
+    ("Replacing revision table", step_replace_revision),
+    ("Rebuilding TOC", step_replace_toc),
+    ("Removing boilerplate", step_remove_boilerplate),
+    ("Removing footer tables", step_remove_footer_tables),
+    ("Removing MEMO cells", step_remove_memo),
+    ("Removing empty rows", step_remove_empty_rows),
+    ("Normalising symbols", step_normalise_symbols),
+    ("Fixing headings", step_fix_headings),
+    ("Adding heading anchors", step_add_heading_ids),
+    ("Rewriting images", step_rewrite_images),
+    ("Cleaning tables", step_clean_tables),
+    ("Cleaning whitespace", step_clean_whitespace),
+]
+
+
+# ── Runner ──────────────────────────────────────────────
+def run(pdf_path, md_path, out_path, img_dir=None):
+
     pdf_path = Path(pdf_path)
-    md_path  = Path(md_path)
+    md_path = Path(md_path)
     out_path = Path(out_path)
 
-    # Resolve figure output directory
-    if img_dir is None:
-        img_dir_path = out_path.parent / DEFAULT_IMG_DIR
-    else:
-        img_dir_path = Path(img_dir)
+    img_dir_path = Path(img_dir) if img_dir else out_path.parent / DEFAULT_IMG_DIR
 
-    # ── Step 1: Extract figures from PDF ──────────────────────────────────
-    #_log(1, "Extracting figures from PDF …")
-    #extract_figures(pdf_path, img_dir_path)
+    context = {
+        "pdf_path": pdf_path,
+        "img_dir": img_dir_path,
+        "out_path": out_path,
+        "toc_entries": extract_toc_entries(md_path),
+    }
 
-    # ── Load input Markdown ───────────────────────────────────────────────
-    _log("–", f"Reading {md_path} …")
+    logger.info(f"Reading {md_path}")
     text = md_path.read_text(encoding="utf-8")
 
-    # ── Step 2: Replace cover page ────────────────────────────────────────
-    _log(2, "Replacing cover page …")
-    text = replace_cover(text)
+    for i, (name, step) in enumerate(PIPELINE, start=1):
+        logger.info(f"[step {i:02}] {name}")
+        text = step(text, context)
 
-    # ── Step 3: Replace revision table ───────────────────────────────────
-    #_log(3, "Replacing revision table …")
-    #text = replace_revision_table(text)
-
-    # ── Step 4: Rebuild Table of Contents ────────────────────────────────
-    #_log(4, "Rebuilding Table of Contents …")
-    #text = replace_toc(text)
-
-    # ── Step 5: Remove boilerplate lines ─────────────────────────────────
-    #_log(5, "Removing boilerplate lines …")
-    #text = remove_boilerplate(text)
-
-    # ── Step 6: Normalise symbol characters ──────────────────────────────
-    #_log(6, "Normalising symbols (☒ / 🔘 → 〇) …")
-    #text = normalise_symbols(text)
-
-    # ── Step 7: Fix heading levels ────────────────────────────────────────
-    #_log(7, "Fixing heading levels …")
-    #text = fix_headings(text)
-
-    # ── Step 8: Rewrite image references ─────────────────────────────────
-    #_log(8, "Rewriting image references …")
-    # Compute a path relative to the output file for portability.
-    try:
-        rel_img_dir = str(img_dir_path.relative_to(out_path.parent))
-    except ValueError:
-        rel_img_dir = img_dir_path.name
-    text = rewrite_images(text, rel_img_dir)
-
-    # ── Step 9: Clean table artefacts ─────────────────────────────────────
-    #_log(9, "Cleaning table page-break artefacts …")
-    #text = clean_tables(text)
-
-    # ── Step 10: Final whitespace cleanup ─────────────────────────────────
-    #_log(10, "Final whitespace cleanup …")
-    #text = clean_whitespace(text)
-
-    # ── Write output ──────────────────────────────────────────────────────
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
-    _log("✓", f"Done → {out_path}  ({out_path.stat().st_size:,} bytes)")
+    logger.info(f"Done → {out_path}")
 
 
-# ── Internal helper ───────────────────────────────────────────────────────────
-
-def _log(step: int | str, message: str) -> None:
-    print(f"[step {step:>2}] {message}")
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="pipeline",
-        description="Transform a raw PDF-extracted Markdown into a clean spec document.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  python pipeline.py --pdf source.pdf --md input.md --out output.md\n"
-            "  python pipeline.py --pdf source.pdf --md input.md --out output.md "
-            "--img-dir assets/figures\n"
-        ),
-    )
-    p.add_argument("--pdf",     required=True,  metavar="PATH", help="Source PDF file")
-    p.add_argument("--md",      required=True,  metavar="PATH", help="Raw input Markdown file")
-    p.add_argument("--out",     required=True,  metavar="PATH", help="Output Markdown file")
-    p.add_argument(
-        "--img-dir",
-        default=None,
-        metavar="PATH",
-        help=(
-            f"Directory for extracted figure PNGs "
-            f"(default: '{DEFAULT_IMG_DIR}/' next to --out)"
-        ),
-    )
+# ── CLI ─────────────────────────────────────────────────
+def _build_parser():
+    p = argparse.ArgumentParser(description="Markdown Cleaning Pipeline")
+    p.add_argument("--pdf", required=True)
+    p.add_argument("--md", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--img-dir", default=None)
     return p
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
-    run(
-        pdf_path=args.pdf,
-        md_path=args.md,
-        out_path=args.out,
-        img_dir=args.img_dir,
-    )
+    run(args.pdf, args.md, args.out, args.img_dir)

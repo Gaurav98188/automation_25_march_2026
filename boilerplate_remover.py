@@ -3,7 +3,6 @@ boilerplate_remover.py
 ----------------------
 Removes per-page footer and header noise lines that PDF-to-Markdown tools
 copy verbatim from the decorative border area of each page.
-
 Noise patterns are defined in config.BOILERPLATE_LINE_PATTERNS.  Add new
 patterns there when adapting the pipeline to a different PDF template.
 
@@ -33,29 +32,35 @@ def _is_boilerplate(line: str) -> bool:
 
 
 def remove_boilerplate(text: str) -> str:
-    """
-    Remove every line that matches a boilerplate pattern, then collapse
-    runs of more than _MAX_BLANK_LINES consecutive empty lines.
+    lines = text.split("\n")
 
-    Parameters
-    ----------
-    text : raw Markdown content
-
-    Returns
-    -------
-    str : Markdown with noise lines removed and blank lines normalised.
-    """
-    # Pass 1: drop boilerplate lines
-    kept: list[str] = [
-        line for line in text.split("\n")
-        if not _is_boilerplate(line)
-    ]
-
-    # Pass 2: collapse excessive blank lines
     result: list[str] = []
     blank_run = 0
-    for line in kept:
-        if line.strip() == "":
+    pending_page_number: str | None = None
+
+    for line in lines:
+        stripped = line.strip()
+
+        # ✅ Capture page number (but don't output yet)
+        if re.fullmatch(r"\d{1,3}", stripped):
+            pending_page_number = stripped
+            continue  # remove original number line
+
+        # ✅ When PageBreak comes, insert correct page number
+        if stripped == "<!-- PageBreak -->":
+            if pending_page_number is not None:
+                result.append(f"<!-- PageNumber: {pending_page_number} -->")
+                pending_page_number = None
+
+            result.append(line)  # keep PageBreak
+            continue
+
+        # Remove boilerplate
+        if _is_boilerplate(line):
+            continue
+
+        # Collapse blank lines
+        if stripped == "":
             blank_run += 1
             if blank_run <= _MAX_BLANK_LINES:
                 result.append(line)

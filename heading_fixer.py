@@ -2,7 +2,6 @@
 heading_fixer.py
 ----------------
 Corrects Markdown heading levels that the PDF extractor assigns incorrectly.
-
 The PDF extractor often promotes or demotes headings based on font size
 rather than document structure.  This module reassigns heading depth by
 inspecting the heading's *content* rather than its current `#` prefix.
@@ -72,15 +71,12 @@ def _rewrite_heading(content: str) -> str | None:
 def fix_headings(text: str) -> str:
     """
     Rewrite every Markdown heading line to its correct depth.
-
-    Lines that are headings (`#`-prefixed) are reclassified.  Lines that
+    Lines that are headings (`#`-prefixed) are reclassified. Lines that
     match artefact patterns are dropped entirely.  All other lines pass
     through unchanged.
-
     Parameters
     ----------
     text : Markdown content
-
     Returns
     -------
     str : Markdown with corrected heading levels.

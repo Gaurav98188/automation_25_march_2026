@@ -18,6 +18,9 @@ Sections
 
 from __future__ import annotations
 
+DEFAULT_IMG_DIR = "figures"
+DEBUG_DIR = "_debug_steps"
+
 # ── PDF rendering ─────────────────────────────────────────────────────────────
 # Dots-per-inch used when rendering PDF pages to raster images for cropping.
 # Higher values produce sharper figure crops but use more memory and time.
@@ -114,6 +117,8 @@ SYMBOL_REGEX_REPLACEMENTS: list[tuple[str, str]] = [
 # page_number : page number shown in the right column
 #
 # Update this list when adapting the pipeline to a different document.
+
+"""
 TOC_ENTRIES: list[tuple[int, str, str, str]] = [
     (0,  "1-はじめに",                        "1. はじめに",                         "4"),
     (20, "11-改造内容",                        "1.1. 改造内容",                       "4"),
@@ -137,3 +142,4 @@ TOC_ENTRIES: list[tuple[int, str, str, str]] = [
     (40, "411一括操作",                        "4.1.1. 一括操作",                     "15"),
     (40, "412-個別操作",                       "4.1.2. 個別操作",                     "25"),
 ]
+"""

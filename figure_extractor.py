@@ -2,7 +2,6 @@
 figure_extractor.py
 -------------------
 Extracts figure images from a PDF and saves them as PNG files.
-
 Strategy
 --------
 The PDF may contain figures as either embedded raster images or as
@@ -20,7 +19,6 @@ handled:
 
 Figure captions are detected by scanning for the pattern「図 N-N」using
 pdfplumber's word extraction.
-
 Public API
 ----------
     extract_figures(pdf_path, out_dir) -> dict[str, Path]
@@ -28,10 +26,8 @@ Public API
 """
 
 from __future__ import annotations
-
 import re
 from pathlib import Path
-
 import pdf2image
 import pdfplumber
 from PIL import Image
@@ -77,7 +73,6 @@ def _pdf_box_to_pil(
 
 
 # ── Caption detection ─────────────────────────────────────────────────────────
-
 def _find_captions(page: pdfplumber.page.Page) -> list[tuple[str, float]]:
     """
     Return [(figure_id, y_top), …] for every figure caption on *page*.

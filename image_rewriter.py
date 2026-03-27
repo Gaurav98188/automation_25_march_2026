@@ -26,11 +26,8 @@ Public API
 """
 
 from __future__ import annotations
-
 import re
-
 from config import DEFAULT_IMG_PREFIX
-
 # Matches the raw extractor format: ![any alt text](figures/N.M)
 _RAW_IMG_RE = re.compile(r"!\[([^\]]*)\]\((figures/[\d]+\.[\d]+)\)")
 
